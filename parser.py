@@ -67,7 +67,7 @@ async def parse_expense(text: str) -> dict:
     today = datetime.now().strftime("%Y-%m-%d")
 
     payload = {
-        "model": "claude-sonnet-4-20250514",
+        "model": "claude-sonnet-4-5",
         "max_tokens": 500,
         "system": SYSTEM_PROMPT + f"\nСьогодні: {today}",
         "messages": [{"role": "user", "content": text}]

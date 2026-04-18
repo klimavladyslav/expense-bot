@@ -2,6 +2,9 @@ import os
 import json
 import httpx
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+KYIV_TZ = ZoneInfo("Europe/Kyiv")
 
 CATEGORIES = [
     "ЗП відділу продажів",
@@ -64,7 +67,7 @@ SYSTEM_PROMPT = f"""Ти асистент для розбору фінансов
 """
 
 async def parse_expense(text: str) -> dict:
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(KYIV_TZ).strftime("%Y-%m-%d")
 
     payload = {
         "model": "claude-sonnet-4-5",

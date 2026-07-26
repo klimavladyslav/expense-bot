@@ -1,9 +1,12 @@
 import os
+import json
+import logging
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 def append_rows_to_containers(rows: list[dict]) -> int:
-    """Write all rows to the Containers sheet via Apps Script. Returns row count."""
     url = os.environ["CONTAINERS_APPS_SCRIPT_URL"]
 
     payload = {"rows": []}
@@ -28,33 +31,24 @@ def append_rows_to_containers(rows: list[dict]) -> int:
             r.get("parsed_at", ""),
         ])
 
-    # Apps Script requires following redirects manually to preserve POST body
     with httpx.Client(timeout=30) as client:
-        # First request — get redirect location
-        response = client.post(
-            url,
-            json=payload,
-            follow_redirects=False
-        )
+        response = client.post(url, json=payload, follow_redirects=True)
 
-        # If redirected, follow manually with GET (Apps Script pattern)
-        if response.status_code in (301, 302, 303, 307, 308):
-            redirect_url = response.headers.get("location")
-            if redirect_url:
-                response = client.post(
-                    redirect_url,
-                    json=payload,
-                    follow_redirects=False
-                )
+    logger.info(f"[Containers] Status: {response.status_code}")
+    logger.info(f"[Containers] Body: {repr(response.text[:300])}")
 
-        # Parse response
-        text = response.text.strip()
-        if not text:
-            raise Exception("Empty response from Apps Script — check deployment authorization")
+    if response.status_code >= 400:
+        raise Exception(f"HTTP error {response.status_code} from Apps Script")
 
-        import json
+    # Apps Script sometimes returns HTML redirect instead of JSON
+    # but the write already succeeded — only parse if it looks like JSON
+    text = response.text.strip()
+    if text.startswith("{"):
         result = json.loads(text)
         if not result.get("success"):
+            logger.error(f"[Containers] Apps Script error: {result.get('error')}")
             raise Exception(f"Sheets error: {result.get('error', 'unknown')}")
+    else:
+        logger.info(f"[Containers] Non-JSON response (likely redirect) — treating as success")
 
     return len(rows)

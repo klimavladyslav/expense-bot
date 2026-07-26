@@ -28,9 +28,33 @@ def append_rows_to_containers(rows: list[dict]) -> int:
             r.get("parsed_at", ""),
         ])
 
-    response = httpx.post(url, json=payload, timeout=20, follow_redirects=True)
-    response.raise_for_status()
-    result = response.json()
-    if not result.get("success"):
-        raise Exception(f"Sheets error: {result.get('error', 'unknown')}")
+    # Apps Script requires following redirects manually to preserve POST body
+    with httpx.Client(timeout=30) as client:
+        # First request — get redirect location
+        response = client.post(
+            url,
+            json=payload,
+            follow_redirects=False
+        )
+
+        # If redirected, follow manually with GET (Apps Script pattern)
+        if response.status_code in (301, 302, 303, 307, 308):
+            redirect_url = response.headers.get("location")
+            if redirect_url:
+                response = client.post(
+                    redirect_url,
+                    json=payload,
+                    follow_redirects=False
+                )
+
+        # Parse response
+        text = response.text.strip()
+        if not text:
+            raise Exception("Empty response from Apps Script — check deployment authorization")
+
+        import json
+        result = json.loads(text)
+        if not result.get("success"):
+            raise Exception(f"Sheets error: {result.get('error', 'unknown')}")
+
     return len(rows)

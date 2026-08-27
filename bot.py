@@ -102,6 +102,14 @@ def _suggest_group(product_name: str) -> str | None:
         return "🧸 Іграшки та дозвілля"
     if any(k in name for k in ["новогод", "christmas"]):
         return "🎄 Сезонні"
+    if any(k in name for k in ["синтепон", "силикон", "полиэстер", "polester", "polyester",
+                                "бамбук", "барашек", "бейка", "велюр", "молния", "пресс",
+                                "сатин", "стрижка", "тесьма", "ткань", "flanel", "flannel",
+                                "лебединый", "норка"]):
+        return "🧵 Сировина"
+    if any(k in name for k in ["сумка", "бирка", "вкладиш", "вкладка", "bag", "label", "tag",
+                                "пакет", "упаковк"]):
+        return "📦 Пакування"
     return None
 
 

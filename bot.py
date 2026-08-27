@@ -16,7 +16,7 @@ from transcriber import transcribe_voice
 from invoice_parser import parse_invoice_file
 from calculator import calculate_rows, group_products_by_similarity
 from sheets_containers import append_rows_to_containers
-from categories import CATEGORIES
+from categories import CATEGORY_GROUPS, CATEGORIES
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -31,9 +31,8 @@ REQUIRED_FIELDS = {
     "account": "рахунок/магазин (Онлайн-продажі / Одеса (Кузьмиха) / Оптові продажі / Хмельницький / Харків)",
 }
 
-# ── Container bot constants ───────────────────────────────────────────────────
+# ── Container bot state keys ──────────────────────────────────────────────────
 S_WAITING_COSTS   = "waiting_costs"
-S_WAITING_MULTI   = "waiting_multi_confirm"
 S_CATEGORY_GROUPS = "category_groups"
 S_CURRENT_GROUP   = "current_group_idx"
 S_ROWS            = "rows"
@@ -42,7 +41,80 @@ S_CUSTOMS         = "customs"
 S_DELIVERY        = "delivery"
 S_TRANSFER_PCT    = "transfer_pct"
 S_PARSED_RESULT   = "parsed_result"
-MAX_CAT_BUTTONS   = 9
+S_SELECTED_GROUP  = "selected_cat_group"   # which top-level group was chosen
+S_EDITING_ROW     = "editing_row_idx"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CATEGORY KEYBOARDS — two-level
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _group_keyboard() -> InlineKeyboardMarkup:
+    """Top-level: show all category groups."""
+    buttons = []
+    row = []
+    for group_name in CATEGORY_GROUPS:
+        row.append(InlineKeyboardButton(group_name, callback_data=f"grp:{group_name}"))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    return InlineKeyboardMarkup(buttons)
+
+
+def _subcategory_keyboard(group_name: str, include_mixed: bool = False) -> InlineKeyboardMarkup:
+    """Second level: show subcategories of chosen group."""
+    cats = CATEGORY_GROUPS.get(group_name, [])
+    buttons = []
+    row = []
+    for cat in cats:
+        row.append(InlineKeyboardButton(cat, callback_data=f"cat:{cat}"))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    if include_mixed:
+        buttons.append([InlineKeyboardButton("⚠️ Не однакові в групі", callback_data="cat:__mixed__")])
+    buttons.append([InlineKeyboardButton("◀️ Назад до груп", callback_data="cat:__back__")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def _suggest_group(product_name: str) -> str | None:
+    """Guess most likely top-level group from product name."""
+    name = product_name.lower()
+    if any(k in name for k in ["плед", "blanket"]):
+        return "🛋️ Пледи"
+    if any(k in name for k in ["покрывал", "coverlet", "muslin", "musl"]):
+        return "🛏️ Покривала"
+    if any(k in name for k in ["постел", "comforter", "bedding", "белье", "jacquard"]):
+        return "🌙 Постільна білизна"
+    if any(k in name for k in ["подушк", "pillow"]):
+        return "🪶 Подушки"
+    if any(k in name for k in ["одеял", "duvet", "quilt"]):
+        return "🌨️ Одеяла"
+    if any(k in name for k in ["халат", "тапочк", "носк", "robe", "slipper"]):
+        return "👘 Одяг та аксесуари"
+    if any(k in name for k in ["коврик", "скатерт", "наматрас", "лежак", "чехол", "простын"]):
+        return "🏠 Для дому"
+    if any(k in name for k in ["игрушк", "качел", "кресл", "toy", "swing", "seat", "recliner"]):
+        return "🧸 Іграшки та дозвілля"
+    if any(k in name for k in ["новогод", "christmas"]):
+        return "🎄 Сезонні"
+    return None
+
+
+def _make_category_prompt(product_names: str, group_idx: int, total_groups: int,
+                           include_mixed: bool, suggested_group: str | None) -> tuple[str, InlineKeyboardMarkup]:
+    """Build the group selection message with optional pre-selected suggestion."""
+    hint = f"\n💡 Схоже на: *{suggested_group}*" if suggested_group else ""
+    text = (
+        f"*Крок 2/3 — Категорія {group_idx}/{total_groups}*\n\n"
+        f"Товар(и):\n{product_names}{hint}\n\n"
+        f"Оберіть групу категорій:"
+    )
+    return text, _group_keyboard()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -79,11 +151,7 @@ async def process_text_expense(text: str, sender: str, update: Update, processin
     errors = []
 
     for i, expense in enumerate(expenses, 1):
-        missing = []
-        for field, label in REQUIRED_FIELDS.items():
-            if not expense.get(field):
-                missing.append(label)
-
+        missing = [label for field, label in REQUIRED_FIELDS.items() if not expense.get(field)]
         if missing:
             prefix = f"Транзакція {i}: " if len(expenses) > 1 else ""
             errors.append(f"{prefix}не вистачає — {', '.join(missing)}")
@@ -115,7 +183,6 @@ async def process_text_expense(text: str, sender: str, update: Update, processin
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Container flow takes priority if waiting for costs
     if context.user_data.get(S_WAITING_COSTS):
         await _process_costs(update, context)
         return
@@ -135,7 +202,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     sender = user.full_name or user.username or "Невідомий"
-    logger.info(f"Голосове від {sender}")
     processing = await update.message.reply_text("🎤 Розпізнаю голосове повідомлення...")
     try:
         voice = update.message.voice
@@ -158,70 +224,13 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # CONTAINER FLOW
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _suggest_categories(product_name: str) -> list:
-    name_lower = product_name.lower()
-    keywords = {
-        "плед":      ["Пледы Стандарт","Пледы Улучшенные","Пледы Люкс","Пледы Премиум","Пледы на диван","Пледы на кровать","Плюшевые пледы","Детские пледы","Меховые покрывала"],
-        "blanket":   ["Пледы Стандарт","Пледы Улучшенные","Пледы Люкс","Пледы Премиум","Пледы на диван","Пледы на кровать","Плюшевые пледы","Детские пледы","Покрывала Муслин"],
-        "pillow":    ["Декоративные подушки","Меховые подушки","Ортопедические подушки","Подушки для беременных","Пуховые подушки","Антиаллергенные подушки","Детские подушки","Подушки игрушки","Меховые подушки Сердце"],
-        "подушк":    ["Декоративные подушки","Меховые подушки","Ортопедические подушки","Подушки для беременных","Пуховые подушки","Антиаллергенные подушки","Детские подушки","Подушки игрушки","Меховые подушки Сердце"],
-        "comforter": ["Постельное белье Сатин","Постельное белье Хлопок","Бамбуковые одеяла","Одеяла из микрофибры","Пуховые одеяла","Меховые одеяла","Антиаллергенные подушки","Плюшевое постельное белье","Фланелевое постельное белье"],
-        "одеял":     ["Бамбуковые одеяла","Пуховые одеяла","Меховые одеяла","Одеяла из микрофибры","Антиаллергенные подушки","Постельное белье Сатин","Стеганные сатиновые покрывала","Детское постельное белье","Плюшевое постельное белье"],
-        "towel":     ["Покрывала Муслин","Пледы Стандарт","Халаты","Детские халаты","Наматрасники","Тапочки","Носки-тапочки","Коврики для дома","Скатерти"],
-        "seat":      ["Подвесные качели","Надувные кресла с пуфом","Лежаки для животных","Коврики для дома","Чехлы на диван 3D Принт","Пледы на диван","Декоративные игрушки","Игрушки","Інше"],
-        "recliner":  ["Надувные кресла с пуфом","Подвесные качели","Чехлы на диван 3D Принт","Пледы на диван","Коврики для дома","Лежаки для животных","Декоративные игрушки","Игрушки","Інше"],
-        "jacquard":  ["Постельное белье Сатин","Стеганные сатиновые покрывала","Атласные покрывала","Покрывала из микрофибры","Постельное белье 3д","Постельное белье Хлопок","Плюшевое постельное белье","Летние покрывала","Льняное постельное белье"],
-    }
-    for kw, cats in keywords.items():
-        if kw in name_lower:
-            return cats[:MAX_CAT_BUTTONS]
-    return sorted(CATEGORIES)[:MAX_CAT_BUTTONS]
-
-
-def _make_category_keyboard(top_cats: list, include_mixed: bool = True) -> InlineKeyboardMarkup:
-    buttons = []
-    row = []
-    for cat in top_cats[:MAX_CAT_BUTTONS]:
-        row.append(InlineKeyboardButton(cat, callback_data=f"cat:{cat}"))
-        if len(row) == 2:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
-    if include_mixed:
-        buttons.append([InlineKeyboardButton("⚠️ Не однакові в групі", callback_data="cat:__mixed__")])
-    return InlineKeyboardMarkup(buttons)
-
-
-def _format_preview(rows: list) -> str:
-    lines = ["📋 *Попередній перегляд:*\n"]
-    for i, r in enumerate(rows, 1):
-        lines.append(
-            f"{i}. *{r['product']}*\n"
-            f"   📦 {r['qty']} {r['unit']} | 🏷 {r['category'] or '—'}\n"
-            f"   💵 Unit: ${r['unit_price']} → Total: *${r['total_unit_cost']}*\n"
-            f"   🏭 {r['supplier']} | {r['invoice_no']}"
-        )
-    return "\n".join(lines)
-
-
-def _preview_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Підтвердити та записати", callback_data="confirm:yes")],
-        [InlineKeyboardButton("✏️ Змінити категорію", callback_data="confirm:edit_cat")],
-        [InlineKeyboardButton("💰 Змінити витрати", callback_data="confirm:edit_costs")],
-    ])
-
-
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     filename = doc.file_name or "invoice"
     ext = os.path.splitext(filename)[1].lower()
 
     if ext not in (".pdf", ".doc", ".docx", ".xlsx", ".xls", ".xlsm"):
-        await update.message.reply_text(
-            "⚠️ Непідтримуваний формат. Надішліть PDF, DOC, DOCX або Excel файл."
-        )
+        await update.message.reply_text("⚠️ Непідтримуваний формат. Надішліть PDF, DOC, DOCX або Excel файл.")
         return
 
     processing = await update.message.reply_text("⏳ Читаю файл та розпізнаю інвойс...")
@@ -243,7 +252,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data[S_PARSED_RESULT] = result
 
         if result.get("multiple_containers") is None and len(invoices) > 1:
-            context.user_data[S_WAITING_MULTI] = True
             inv_list = "\n".join(
                 f"• {inv['invoice_no']} — {inv.get('supplier','?')} — ${inv.get('invoice_amount_total','?')}"
                 for inv in invoices
@@ -298,7 +306,7 @@ async def _process_costs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     payload = {
         "model": "claude-sonnet-4-5",
         "max_tokens": 200,
-        "system": 'Extract customs, delivery, transfer costs. Return ONLY JSON: {"customs": number, "delivery": number, "transfer_pct": number_or_null, "transfer_fixed": number_or_null}. transfer_pct is a percentage (e.g. 3 for 3%). If not mentioned use null.',
+        "system": 'Extract customs, delivery, transfer costs. Return ONLY JSON: {"customs": number, "delivery": number, "transfer_pct": number_or_null, "transfer_fixed": number_or_null}. transfer_pct is a percentage (3 for 3%). If not mentioned use null.',
         "messages": [{"role": "user", "content": text}]
     }
     async with httpx.AsyncClient(timeout=20) as client:
@@ -353,7 +361,7 @@ async def _start_category_selection(update, context):
     await _ask_category_for_current_group(update, context)
 
 
-async def _ask_category_for_current_group(update, context):
+async def _ask_category_for_current_group(update, context, edit_msg=None):
     groups = context.user_data[S_CATEGORY_GROUPS]
     idx = context.user_data[S_CURRENT_GROUP]
 
@@ -363,18 +371,45 @@ async def _ask_category_for_current_group(update, context):
 
     group = groups[idx]
     product_names = "\n".join(f"• {p['product']}" for p in group)
-    suggested = _suggest_categories(group[0]["product"])
-    keyboard = _make_category_keyboard(suggested, include_mixed=(len(group) > 1))
+    suggested_group = _suggest_group(group[0]["product"])
+    include_mixed = len(group) > 1
 
-    text = (
-        f"*Крок 2/3 — Категорія {idx+1}/{len(groups)}*\n\n"
-        f"Товар(и):\n{product_names}\n\n"
-        f"Оберіть категорію:"
+    text, keyboard = _make_category_prompt(
+        product_names, idx + 1, len(groups), include_mixed, suggested_group
     )
-    if hasattr(update, "callback_query") and update.callback_query:
-        await update.callback_query.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
-    else:
-        await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
+
+    # Store suggested group for quick access
+    context.user_data[S_SELECTED_GROUP] = suggested_group
+    context.user_data["current_include_mixed"] = include_mixed
+
+    target = edit_msg
+    if not target:
+        if hasattr(update, "callback_query") and update.callback_query:
+            target = update.callback_query.message
+        else:
+            target = update.message
+
+    await target.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
+
+
+def _format_preview(rows: list) -> str:
+    lines = ["📋 *Попередній перегляд:*\n"]
+    for i, r in enumerate(rows, 1):
+        lines.append(
+            f"{i}. *{r['product']}*\n"
+            f"   📦 {r['qty']} {r['unit']} | 🏷 {r['category'] or '—'}\n"
+            f"   💵 Unit: ${r['unit_price']} → Total: *${r['total_unit_cost']}*\n"
+            f"   🏭 {r['supplier']} | {r['invoice_no']}"
+        )
+    return "\n".join(lines)
+
+
+def _preview_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Підтвердити та записати", callback_data="confirm:yes")],
+        [InlineKeyboardButton("✏️ Змінити категорію", callback_data="confirm:edit_cat")],
+        [InlineKeyboardButton("💰 Змінити витрати", callback_data="confirm:edit_costs")],
+    ])
 
 
 async def _show_preview(update, context):
@@ -387,16 +422,20 @@ async def _show_preview(update, context):
     )
     context.user_data[S_ROWS] = rows
     text = f"*Крок 3/3 — Перевірте дані:*\n\n{_format_preview(rows)}"
-    keyboard = _preview_keyboard()
     target = update.callback_query.message if hasattr(update, "callback_query") and update.callback_query else update.message
-    await target.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
+    await target.reply_text(text, reply_markup=_preview_keyboard(), parse_mode="Markdown")
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CALLBACKS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
 
+    # ── Multi-container ───────────────────────────────────────────────────────
     if data.startswith("multi:"):
         choice = data.split(":")[1]
         invoices = context.user_data[S_PARSED_RESULT]["invoices"]
@@ -414,14 +453,64 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         await _ask_costs(update, context)
 
+    # ── Top-level group selected ──────────────────────────────────────────────
+    elif data.startswith("grp:"):
+        group_name = data[4:]
+        context.user_data[S_SELECTED_GROUP] = group_name
+        include_mixed = context.user_data.get("current_include_mixed", False)
+
+        groups = context.user_data[S_CATEGORY_GROUPS]
+        idx = context.user_data.get(S_CURRENT_GROUP, 0)
+        editing = S_EDITING_ROW in context.user_data
+
+        group = groups[idx] if not editing else None
+        product_name = (groups[idx][0]["product"] if not editing
+                        else context.user_data[S_ROWS][context.user_data[S_EDITING_ROW]]["product"])
+
+        await query.edit_message_text(
+            f"*{group_name}* — оберіть категорію:\n_{product_name}_",
+            reply_markup=_subcategory_keyboard(group_name, include_mixed=include_mixed and not editing),
+            parse_mode="Markdown"
+        )
+
+    # ── Subcategory selected ──────────────────────────────────────────────────
     elif data.startswith("cat:"):
         cat = data[4:]
-        groups = context.user_data[S_CATEGORY_GROUPS]
-        idx = context.user_data[S_CURRENT_GROUP]
+
+        if cat == "__back__":
+            # Go back to group selection
+            groups = context.user_data[S_CATEGORY_GROUPS]
+            idx = context.user_data.get(S_CURRENT_GROUP, 0)
+            editing = S_EDITING_ROW in context.user_data
+            include_mixed = context.user_data.get("current_include_mixed", False) and not editing
+
+            if editing:
+                row = context.user_data[S_ROWS][context.user_data[S_EDITING_ROW]]
+                product_names = f"• {row['product']}"
+            else:
+                group = groups[idx]
+                product_names = "\n".join(f"• {p['product']}" for p in group)
+
+            suggested = _suggest_group(product_names)
+            text, keyboard = _make_category_prompt(
+                product_names, idx + 1, len(groups), include_mixed, suggested
+            )
+            await query.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown")
+            return
+
+        if cat == "__mixed__":
+            groups = context.user_data[S_CATEGORY_GROUPS]
+            idx = context.user_data[S_CURRENT_GROUP]
+            group = groups[idx]
+            new_groups = groups[:idx] + [[p] for p in group] + groups[idx+1:]
+            context.user_data[S_CATEGORY_GROUPS] = new_groups
+            await query.message.reply_text("↩️ Розбиваю на окремі товари...")
+            await _ask_category_for_current_group(update, context)
+            return
 
         # Edit mode
-        if "editing_row_idx" in context.user_data:
-            row_idx = context.user_data.pop("editing_row_idx")
+        if S_EDITING_ROW in context.user_data:
+            row_idx = context.user_data.pop(S_EDITING_ROW)
             rows = context.user_data.get(S_ROWS, [])
             rows[row_idx]["category"] = cat
             products = context.user_data[S_INVOICE].get("products", [])
@@ -431,14 +520,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _show_preview(update, context)
             return
 
+        # Normal category assignment
+        groups = context.user_data[S_CATEGORY_GROUPS]
+        idx = context.user_data[S_CURRENT_GROUP]
         group = groups[idx]
-        if cat == "__mixed__":
-            new_groups = groups[:idx] + [[p] for p in group] + groups[idx+1:]
-            context.user_data[S_CATEGORY_GROUPS] = new_groups
-            await query.message.reply_text("↩️ Розбиваю на окремі товари...")
-            await _ask_category_for_current_group(update, context)
-            return
-
         for p in group:
             p["category"] = cat
         await query.edit_message_text(
@@ -448,8 +533,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data[S_CURRENT_GROUP] = idx + 1
         await _ask_category_for_current_group(update, context)
 
+    # ── Preview actions ───────────────────────────────────────────────────────
     elif data.startswith("confirm:"):
         action = data.split(":")[1]
+
         if action == "yes":
             rows = context.user_data.get(S_ROWS, [])
             try:
@@ -465,10 +552,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif action == "edit_cat":
             rows = context.user_data.get(S_ROWS, [])
             buttons = [
-                [InlineKeyboardButton(f"{i+1}. {r['product'][:35]} → {r['category'] or '—'}", callback_data=f"editcat:{i}")]
+                [InlineKeyboardButton(
+                    f"{i+1}. {r['product'][:30]} → {r['category'] or '—'}",
+                    callback_data=f"editcat:{i}"
+                )]
                 for i, r in enumerate(rows)
             ]
-            buttons.append([InlineKeyboardButton("↩️ Назад", callback_data="confirm:back")])
+            buttons.append([InlineKeyboardButton("◀️ Назад", callback_data="confirm:back")])
             await query.edit_message_text("Який рядок змінити?", reply_markup=InlineKeyboardMarkup(buttons))
 
         elif action == "edit_costs":
@@ -481,15 +571,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif action == "back":
             await _show_preview(update, context)
 
+    # ── Edit specific row category ────────────────────────────────────────────
     elif data.startswith("editcat:"):
         row_idx = int(data.split(":")[1])
         rows = context.user_data.get(S_ROWS, [])
         row = rows[row_idx]
-        context.user_data["editing_row_idx"] = row_idx
-        suggested = _suggest_categories(row["product"])
-        keyboard = _make_category_keyboard(suggested, include_mixed=False)
+        context.user_data[S_EDITING_ROW] = row_idx
+        context.user_data["current_include_mixed"] = False
+
+        suggested = _suggest_group(row["product"])
+        context.user_data[S_SELECTED_GROUP] = suggested
+        text, keyboard = _make_category_prompt(
+            f"• {row['product']}",
+            row_idx + 1,
+            len(rows),
+            False,
+            suggested
+        )
         await query.edit_message_text(
-            f"Нова категорія для:\n*{row['product']}*\nПоточна: _{row['category'] or '—'}_",
+            f"Змінюємо категорію для:\n*{row['product']}*\nПоточна: _{row['category'] or '—'}_\n\n{text}",
             reply_markup=keyboard,
             parse_mode="Markdown"
         )

@@ -50,17 +50,21 @@ S_EDITING_ROW     = "editing_row_idx"
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _group_keyboard() -> InlineKeyboardMarkup:
-    """Top-level: show all category groups."""
+    """Top-level: show all category groups. Use index in callback_data (no emoji allowed)."""
     buttons = []
     row = []
-    for group_name in CATEGORY_GROUPS:
-        row.append(InlineKeyboardButton(group_name, callback_data=f"grp:{group_name}"))
+    for i, group_name in enumerate(CATEGORY_GROUPS):
+        row.append(InlineKeyboardButton(group_name, callback_data=f"grp:{i}"))
         if len(row) == 2:
             buttons.append(row)
             row = []
     if row:
         buttons.append(row)
     return InlineKeyboardMarkup(buttons)
+
+
+def _group_name_by_index(idx: int) -> str:
+    return list(CATEGORY_GROUPS.keys())[idx]
 
 
 def _subcategory_keyboard(group_name: str, include_mixed: bool = False) -> InlineKeyboardMarkup:
@@ -463,7 +467,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── Top-level group selected ──────────────────────────────────────────────
     elif data.startswith("grp:"):
-        group_name = data[4:]
+        group_name = _group_name_by_index(int(data[4:]))
         context.user_data[S_SELECTED_GROUP] = group_name
         include_mixed = context.user_data.get("current_include_mixed", False)
 

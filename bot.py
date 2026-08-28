@@ -23,6 +23,13 @@ logger = logging.getLogger(__name__)
 
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
 
+def _escape_md(text: str) -> str:
+    """Escape Markdown special characters in text."""
+    for ch in ['*', '_', '`', '[', ']']:
+        text = text.replace(ch, f'\{ch}')
+    return text
+
+
 # ── Expense bot constants ─────────────────────────────────────────────────────
 REQUIRED_FIELDS = {
     "amount": "суму",
@@ -382,7 +389,7 @@ async def _ask_category_for_current_group(update, context, edit_msg=None):
         return
 
     group = groups[idx]
-    product_names = "\n".join(f"• {p['product']}" for p in group)
+    product_names = "\n".join(f"• {_escape_md(p['product'])}" for p in group)
     suggested_group = _suggest_group(group[0]["product"])
     include_mixed = len(group) > 1
 
@@ -408,7 +415,7 @@ def _format_preview(rows: list) -> str:
     lines = ["📋 *Попередній перегляд:*\n"]
     for i, r in enumerate(rows, 1):
         lines.append(
-            f"{i}. *{r['product']}*\n"
+            f"{i}. *{_escape_md(r['product'])}*\n"
             f"   📦 {r['qty']} {r['unit']} | 🏷 {r['category'] or '—'}\n"
             f"   💵 Unit: ${r['unit_price']} → Total: *${r['total_unit_cost']}*\n"
             f"   🏭 {r['supplier']} | {r['invoice_no']}"
@@ -480,7 +487,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         else context.user_data[S_ROWS][context.user_data[S_EDITING_ROW]]["product"])
 
         await query.edit_message_text(
-            f"*{group_name}* — оберіть категорію:\n_{product_name}_",
+            f"*{group_name}* — оберіть категорію:\n_{_escape_md(product_name)}_",
             reply_markup=_subcategory_keyboard(group_name, include_mixed=include_mixed and not editing),
             parse_mode="Markdown"
         )
@@ -501,7 +508,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 product_names = f"• {row['product']}"
             else:
                 group = groups[idx]
-                product_names = "\n".join(f"• {p['product']}" for p in group)
+                product_names = "\n".join(f"• {_escape_md(p['product'])}" for p in group)
 
             suggested = _suggest_group(product_names)
             text, keyboard = _make_category_prompt(
@@ -601,7 +608,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             suggested
         )
         await query.edit_message_text(
-            f"Змінюємо категорію для:\n*{row['product']}*\nПоточна: _{row['category'] or '—'}_\n\n{text}",
+            f"Змінюємо категорію для:\n*{_escape_md(row['product'])}*\nПоточна: _{row['category'] or '—'}_\n\n{text}",
             reply_markup=keyboard,
             parse_mode="Markdown"
         )

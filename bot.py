@@ -75,12 +75,13 @@ def _group_name_by_index(idx: int) -> str:
 
 
 def _subcategory_keyboard(group_name: str, include_mixed: bool = False) -> InlineKeyboardMarkup:
-    """Second level: show subcategories of chosen group."""
+    """Second level: show subcategories using indices to stay within 64 byte callback_data limit."""
     cats = CATEGORY_GROUPS.get(group_name, [])
+    group_idx = list(CATEGORY_GROUPS.keys()).index(group_name)
     buttons = []
     row = []
-    for cat in cats:
-        row.append(InlineKeyboardButton(cat, callback_data=f"cat:{cat}"))
+    for cat_idx, cat in enumerate(cats):
+        row.append(InlineKeyboardButton(cat, callback_data=f"cat:{group_idx}:{cat_idx}"))
         if len(row) == 2:
             buttons.append(row)
             row = []
@@ -90,6 +91,11 @@ def _subcategory_keyboard(group_name: str, include_mixed: bool = False) -> Inlin
         buttons.append([InlineKeyboardButton("⚠️ Не однакові в групі", callback_data="cat:__mixed__")])
     buttons.append([InlineKeyboardButton("◀️ Назад до груп", callback_data="cat:__back__")])
     return InlineKeyboardMarkup(buttons)
+
+
+def _cat_name_by_index(group_idx: int, cat_idx: int) -> str:
+    group_name = _group_name_by_index(group_idx)
+    return CATEGORY_GROUPS[group_name][cat_idx]
 
 
 def _suggest_group(product_name: str) -> str | None:
@@ -494,7 +500,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── Subcategory selected ──────────────────────────────────────────────────
     elif data.startswith("cat:"):
-        cat = data[4:]
+        raw = data[4:]
+
+        # Decode cat name from group_idx:cat_idx format
+        if raw not in ("__back__", "__mixed__") and ":" in raw:
+            parts = raw.split(":")
+            cat = _cat_name_by_index(int(parts[0]), int(parts[1]))
+        else:
+            cat = raw
 
         if cat == "__back__":
             # Go back to group selection

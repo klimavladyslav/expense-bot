@@ -133,9 +133,9 @@ def _suggest_group(product_name: str) -> str | None:
 def _make_category_prompt(product_names: str, group_idx: int, total_groups: int,
                            include_mixed: bool, suggested_group: str | None) -> tuple[str, InlineKeyboardMarkup]:
     """Build the group selection message with optional pre-selected suggestion."""
-    hint = f"\n💡 Схоже на: *{suggested_group}*" if suggested_group else ""
+    hint = f"\n💡 Схоже на: {suggested_group}" if suggested_group else ""
     text = (
-        f"*Крок 2/3 — Категорія {group_idx}/{total_groups}*\n\n"
+        f"Крок 2/3 — Категорія {group_idx}/{total_groups}\n\n"
         f"Товар(и):\n{product_names}{hint}\n\n"
         f"Оберіть групу категорій:"
     )
@@ -414,16 +414,16 @@ async def _ask_category_for_current_group(update, context, edit_msg=None):
         else:
             target = update.message
 
-    await target.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
+    await target.reply_text(text, reply_markup=keyboard)
 
 
 def _format_preview(rows: list) -> str:
-    lines = ["📋 *Попередній перегляд:*\n"]
+    lines = ["📋 Попередній перегляд:\n"]
     for i, r in enumerate(rows, 1):
         lines.append(
-            f"{i}. *{_escape_md(r['product'])}*\n"
+            f"{i}. {r['product']}\n"
             f"   📦 {r['qty']} {r['unit']} | 🏷 {r['category'] or '—'}\n"
-            f"   💵 Unit: ${r['unit_price']} → Total: *${r['total_unit_cost']}*\n"
+            f"   💵 Unit: ${r['unit_price']} -> Total: ${r['total_unit_cost']}\n"
             f"   🏭 {r['supplier']} | {r['invoice_no']}"
         )
     return "\n".join(lines)
@@ -446,9 +446,9 @@ async def _show_preview(update, context):
         context.user_data[S_TRANSFER_PCT]
     )
     context.user_data[S_ROWS] = rows
-    text = f"*Крок 3/3 — Перевірте дані:*\n\n{_format_preview(rows)}"
+    text = f"Крок 3/3 — Перевірте дані:\n\n{_format_preview(rows)}"
     target = update.callback_query.message if hasattr(update, "callback_query") and update.callback_query else update.message
-    await target.reply_text(text, reply_markup=_preview_keyboard(), parse_mode="Markdown")
+    await target.reply_text(text, reply_markup=_preview_keyboard())
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -493,9 +493,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         else context.user_data[S_ROWS][context.user_data[S_EDITING_ROW]]["product"])
 
         await query.edit_message_text(
-            f"*{group_name}* — оберіть категорію:\n_{_escape_md(product_name)}_",
+            f"{group_name} — оберіть категорію:\n{product_name}",
             reply_markup=_subcategory_keyboard(group_name, include_mixed=include_mixed and not editing),
-            parse_mode="Markdown"
         )
 
     # ── Subcategory selected ──────────────────────────────────────────────────
@@ -559,8 +558,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for p in group:
             p["category"] = cat
         await query.edit_message_text(
-            f"✅ *{cat}*\n" + "\n".join(f"• {p['product']}" for p in group),
-            parse_mode="Markdown"
+            f"✅ {cat}\n" + "\n".join(f"• {p['product']}" for p in group)
         )
         context.user_data[S_CURRENT_GROUP] = idx + 1
         await _ask_category_for_current_group(update, context)

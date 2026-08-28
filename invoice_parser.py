@@ -115,6 +115,15 @@ Rules:
 - Extract CBM per product line if available in packing list, otherwise null
 - invoice_amount_total is the grand total of the invoice
 - Dates in YYYY-MM-DD format
+
+IMPORTANT - Grouped/bundled product lines:
+- Some invoices list components of a set across multiple rows but with ONE shared quantity and ONE shared price for the whole block (e.g. a bedding set listed as: row1=duvet cover, row2=flat sheet, row3=pillow case — all sharing qty=4080 and unit_price=$11.10)
+- In this case, treat the entire block as ONE product line, not multiple
+- Product name format: "[block name] ([component1], [component2], [component3])"
+  Example: "4 pcs set double size (duvet cover, flat sheet, 2x pillow case)"
+- Use the block-level qty and unit_price (the ones that appear once for the whole group)
+- Each distinct block with its own qty/price = one product line
+- Only apply this grouping when multiple rows genuinely share a single qty+price; if each row has its own qty and price, keep them separate
 """
 
 
